@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>FFmpeg WASM MP4 → MP3 Converter</title>
+  <style>
+    /* --- STYLING (Simple and Functional) --- */
+    body { 
+        font-family: Arial, sans-serif; 
+        padding: 20px; 
+        background-color: #f4f4f4;
+    }
+    h2 { color: #333; }
+    #status { 
+        font-weight: bold; 
+        margin: 10px 0;
+        color: #007bff;
+    }
+    #progressBar {
+        width: 100%;
+        height: 20px;
+        background-color: #ccc;
+        border-radius: 5px;
+        margin-bottom: 10px;
+    }
+    #progressFill {
+        height: 100%;
+        width: 0%;
+        background-color: #28a745;
+        border-radius: 5px;
+        transition: width 0.3s;
+    }
+    #log { 
+        white-space: pre; 
+        background: #eee; 
+        padding: 10px; 
+        margin-top: 20px; 
+        border: 1px solid #ddd;
+        max-height: 200px;
+        overflow-y: scroll;
+    }
+    button {
+        padding: 8px 15px;
+        font-size: 16px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        margin-left: 10px;
+        transition: background-color 0.2s;
+        background-color: #007bff;
+        color: white;
+    }
+    button:hover {
+        background-color: #0056b3;
+    }
+    /* Simple styling for when we temporarily disable it during conversion */
+    button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+    }
+    #fileInput {
+        border: 1px solid #ccc;
+        padding: 5px;
+        border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<h2>MP4 → MP3 Converter (FFmpeg WASM)</h2>
+
+<input id="fileInput" type="file" accept="video/*"> 
+<button id="convertBtn">Convert</button>
+
+<div id="progressBar">
+    <div id="progressFill"></div>
+</div>
+<span id="progressPercent">0%</span>
+
+<p id="status">Status: Waiting for file</p>
+<pre id="log">FFmpeg Log:</pre>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.7/dist/ffmpeg.min.js"></script>
+
+<script>
+  // --- FFmpeg Initialization (CDN Fix) ---
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  
+  // Use the UNPKG CDN path for maximum reliability on all platforms (local/GitHub Pages).
+  const ffmpeg = createFFmpeg({ 
+      log: true,
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.12.5/dist/ffmpeg-core.js',
+  });
+  
+  // --- Element Mapping ---
+  const fileInput = document.getElementById("fileInput");
+  const convertBtn = document.getElementById("convertBtn");
+  const statusEl = document.getElementById("status");
+  const logEl = document.getElementById("log");
+  const progressFill = document.getElementById("progressFill");
+  const progressPercent = document.getElementById("progressPercent");
+
+  // --- Event Handler: File Selection Feedback ---
+  fileInput.addEventListener("change", (e) => {
+    if (e.target.files.length > 0) {
+      const fileName = e.target.files[0].name;
+      statusEl.innerText = "Status: File selected ✔ " + fileName;
+      convertBtn.textContent = `Convert ${fileName.split('.').pop().toUpperCase()} to MP3`; 
+    } else {
+      statusEl.innerText = "Status: Waiting for file";
+      convertBtn.textContent = "Convert";
+    }
+  });
+
+  // --- Event Handler: Conversion Logic (Always Clickable) ---
+  convertBtn.addEventListener("click", async () => {
+    // 1. INPUT CHECK (Now handled inside click)
+    if (fileInput.files.length === 0) {
+      alert("Please select a file first by clicking 'Choose File'.");
+      return;
+    }
+
+    const file = fileInput.files[0];
+    convertBtn.disabled = true; // Temporarily disable button during processing
+    convertBtn.textContent = "Loading Engine...";
+    statusEl.innerText = "Status: Loading FFmpeg engine from CDN (This can take a few seconds)...";
+    logEl.textContent = "FFmpeg Log:\n";
+    progressFill.style.width = '0%';
+    progressPercent.textContent = '0%';
+
+    let outputFileName; 
+
+    try {
+        // 2. Load FFmpeg Core
+        if (!ffmpeg.isLoaded()) {
+          await ffmpeg.load();
+        }
+
+        statusEl.innerText = "Status: Engine Loaded. Converting...";
+        convertBtn.textContent = "Converting...";
+
+        // 3. Write file and setup progress
+        ffmpeg.FS("writeFile", "input.mp4", await fetchFile(file));
+
+        ffmpeg.on('progress', ({ ratio }) => {
+            const percent = Math.round(ratio * 100);
+            progressFill.style.width = percent + '%';
+            progressPercent.textContent = percent + '%';
+        });
+
+        // 4. Run conversion command
+        outputFileName = file.name.replace(/\.[^/.]+$/, "") + ".mp3";
+        await ffmpeg.run("-i", "input.mp4", "-b:a", "128k", outputFileName); 
+
+        // 5. Download
+        const data = ffmpeg.FS("readFile", outputFileName);
+        const url = URL.createObjectURL(new Blob([data.buffer], { type: "audio/mpeg" }));
+        
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = outputFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url); 
+
+        statusEl.innerText = `Status: Conversion Complete and Downloaded!`;
+        convertBtn.textContent = "Convert Complete!";
+        progressFill.style.width = '100%';
+        progressPercent.textContent = '100%';
+        
+    } catch (error) {
+        statusEl.innerText = "Status: FATAL ERROR. Conversion failed. Check browser console (F12).";
+        convertBtn.textContent = "Error: Try Again";
+        console.error("Conversion Error:", error);
+        logEl.textContent += "\n--- FATAL ERROR ---\n" + error.message + "\n";
+    } finally {
+        // 6. Cleanup and Reset
+        convertBtn.disabled = false;
+        
+        try {
+            ffmpeg.FS('unlink', 'input.mp4');
+            if (outputFileName) {
+                 ffmpeg.FS('unlink', outputFileName);
+            }
+        } catch (e) {
+            // Ignore cleanup errors
+        }
+    }
+  });
+
+  // --- FFmpeg Logger ---
+  ffmpeg.setLogger(({ message }) => {
+    logEl.textContent += message + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  });
+</script>
+
+</body>
+</html>
