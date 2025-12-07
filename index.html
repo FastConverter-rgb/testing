@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>FFmpeg WASM MP4 → MP3 Converter</title>
+  <style>
+    body { 
+        font-family: Arial, sans-serif; 
+        padding: 20px; 
+        background-color: #f4f4f4;
+    }
+    h2 { color: #333; }
+    #status { 
+        font-weight: bold; 
+        margin: 10px 0;
+        color: #007bff;
+    }
+    #progressBar {
+        width: 100%;
+        height: 20px;
+        background-color: #ccc;
+        border-radius: 5px;
+        margin-bottom: 10px;
+    }
+    #progressFill {
+        height: 100%;
+        width: 0%;
+        background-color: #28a745;
+        border-radius: 5px;
+        transition: width 0.3s;
+    }
+    #log { 
+        white-space: pre; 
+        background: #eee; 
+        padding: 10px; 
+        margin-top: 20px; 
+        border: 1px solid #ddd;
+        max-height: 200px;
+        overflow-y: scroll;
+    }
+    button {
+        padding: 8px 15px;
+        font-size: 16px;
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        margin-left: 10px;
+        transition: background-color 0.2s;
+    }
+    #convertBtn {
+        background-color: #007bff;
+        color: white;
+    }
+    #convertBtn:hover:not(:disabled) {
+        background-color: #0056b3;
+    }
+    #convertBtn:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+    }
+    #fileInput {
+        border: 1px solid #ccc;
+        padding: 5px;
+        border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<h2>MP4 → MP3 Converter (FFmpeg WASM)</h2>
+
+<input id="fileInput" type="file" accept="video/*"> 
+<button id="convertBtn" disabled>Convert</button>
+
+<div id="progressBar">
+    <div id="progressFill"></div>
+</div>
+<span id="progressPercent">0%</span>
+
+<p id="status">Status: Waiting for file</p>
+<pre id="log">FFmpeg Log:</pre>
+
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.5/dist/ffmpeg.min.js"></script>
+<script>
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  
+  // *** FIXED INITIALIZATION ***
+  // We use the UNPKG CDN path to ensure the core WASM files load reliably 
+  // on public servers like GitHub Pages.
+  const ffmpeg = createFFmpeg({ 
+      log: true,
+      corePath: 'https://unpkg.com/@ffmpeg/core@0.12.5/dist/ffmpeg-core.js',
+  });
+  // **************************
+  
+  const fileInput = document.getElementById("fileInput");
+  const convertBtn = document.getElementById("convertBtn");
+  const statusEl = document.getElementById("status");
+  const logEl = document.getElementById("log");
+  const progressFill = document.getElementById("progressFill");
+  const progressPercent = document.getElementById("progressPercent");
+
+  let isFileSelected = false;
+
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files.length > 0) {
+      statusEl.innerText = "Status: File selected ✔ " + fileInput.files[0].name;
+      convertBtn.disabled = false;
+      isFileSelected = true;
+    } else {
+      statusEl.innerText = "Status: Waiting for file";
+      convertBtn.disabled = true;
+      isFileSelected = false;
+    }
+  });
+
+  convertBtn.addEventListener("click", async () => {
+    if (!isFileSelected) {
+      alert("Select an MP4 file first!");
+      return;
+    }
+
+    const file = fileInput.files[0];
+    convertBtn.disabled = true;
+    statusEl.innerText = "Status: Loading FFmpeg engine from CDN...";
+    logEl.textContent = "FFmpeg Log:\n";
+    progressFill.style.width = '0%';
+    progressPercent.textContent = '0%';
+
+    try {
+        if (!ffmpeg.isLoaded()) {
+          // This will now correctly use the corePath defined above
+          await ffmpeg.load();
+        }
+
+        statusEl.innerText = "Status: Engine Loaded. Converting...";
+
+        // 1. Write the file to the virtual filesystem
+        ffmpeg.FS("writeFile", "input.mp4", await fetchFile(file));
+
+        // 2. Setup progress monitoring
+        ffmpeg.on('progress', ({ ratio }) => {
+            // ratio is between 0 and 1
+            const percent = Math.round(ratio * 100);
+            progressFill.style.width = percent + '%';
+            progressPercent.textContent = percent + '%';
+        });
+
+        // 3. Run the conversion command
+        const outputFileName = file.name.replace(/\.[^/.]+$/, "") + ".mp3";
+        await ffmpeg.run("-i", "input.mp4", "-b:a", "128k", outputFileName); 
+
+        // 4. Read the converted file
+        const data = ffmpeg.FS("readFile", outputFileName);
+
+        // 5. Create and trigger download
+        const url = URL.createObjectURL(new Blob([data.buffer], { type: "audio/mpeg" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = outputFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url); // Clean up the object URL
+
+        statusEl.innerText = `Status: Conversion Complete and Downloaded! (${outputFileName})`;
+        progressFill.style.width = '100%';
+        progressPercent.textContent = '100%';
+        
+    } catch (error) {
+        statusEl.innerText = "Status: ERROR occurred during conversion. Check console (F12).";
+        console.error("Conversion Error:", error);
+        logEl.textContent += "\n--- ERROR ---\n" + error.message + "\n";
+    } finally {
+        convertBtn.disabled = false;
+        // Clean up the virtual files
+        try {
+            ffmpeg.FS('unlink', 'input.mp4');
+            ffmpeg.FS('unlink', outputFileName);
+        } catch (e) {
+            console.warn("Cleanup failed:", e);
+        }
+    }
+  });
+
+  // FFmpeg logs (for detailed terminal output)
+  ffmpeg.setLogger(({ message }) => {
+    logEl.textContent += message + "\n";
+    logEl.scrollTop = logEl.scrollHeight; // Auto-scroll to bottom
+  });
+</script>
+
+</body>
+</html>
